@@ -1,7 +1,10 @@
+from datetime import datetime
+
 import asyncio
 import time
 import psutil
 from bot import db
+from bot.jobs import send_reminder
 
 TOOL_SCHEMAS = [
     {
@@ -46,6 +49,27 @@ TOOL_SCHEMAS = [
                 "required": ["key", "value"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_reminder",
+            "description": "Установить напоминание. Планировщик отправит сообщение в указанное время.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "run_at": {
+                        "type": "string",
+                        "description": "Точное время срабатывания строго в формате 'YYYY-MM-DD HH:MM:SS'"
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Текст напоминания, который нужно прислать"
+                    }
+                },
+                "required": ["run_at", "text"]
+            }
+        }
     }
 ]
 
@@ -87,19 +111,39 @@ async def get_docker_status() -> str:
     return "Нет запущенных контейнеров или пустой вывод."
 
 
-def build_tools_registry(user_id: int) -> dict:
+def build_tools_registry(user_id: int, scheduler=None) -> dict:
     async def save_memory(key: str, value: str) -> str:
         # Функция захватывает user_id из области видимости фабрики
         await db.save_fact(user_id, key, value)
         return f"✅ Запомнила: {key} = {value}"
 
+    async def set_reminder(run_at: str, text: str) -> str:
+        if not scheduler:
+            return "❌ Ошибка: Планировщик не подключены."
+
+        try:
+            run_date = datetime.strptime(run_at, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return "❌ Ошибка формата времени. Используй 'YYYY-MM-DD HH:MM:SS'."
+
+        scheduler.add_job(
+            send_reminder,
+            'date',
+            run_date=run_date,
+            args=[user_id, text]
+        )
+        return f"✅ Напоминание успешно установлено на {run_at}."
+
+
     return {
         "get_system_status": get_system_status,
         "get_docker_status": get_docker_status,
         "save_memory": save_memory,
+        "set_reminder": set_reminder,
     }
 
 TOOL_DESCRIPTIONS = {
     "get_system_status": "Гляну статы сервера...",
     "get_docker_status": "Смотрю докер...",
+    "set_reminder": "Ставлю напоминалочку...",
 }

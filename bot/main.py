@@ -14,6 +14,10 @@ from bot.tools import TOOL_DESCRIPTIONS
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from bot.config import DATABASE_URL
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -35,7 +39,7 @@ async def cmd_clear(message: Message) -> None:
 
 
 @dp.message(F.text)
-async def handle_message(message: Message) -> None:
+async def handle_message(message: Message, scheduler: AsyncIOScheduler) -> None:
     async def keep_typing():
         try:
             while True:
@@ -66,6 +70,7 @@ async def handle_message(message: Message) -> None:
             facts=facts,
             user_message=user_text,
             user_id=user_id,
+            scheduler=scheduler,
             on_tool_call=notify_tool
         )
         await db.save_message(user_id, "user", user_text)
@@ -81,9 +86,16 @@ async def handle_message(message: Message) -> None:
 
 async def main() -> None:
     await db.init_pool()
+
+    jobstores = {
+        'default': SQLAlchemyJobStore(url=DATABASE_URL)
+    }
+
+    scheduler = AsyncIOScheduler(jobstores=jobstores)
+    scheduler.start()
     logger.info("Кира проснулась и слушает Telegram (owner_id=%s)...", ALLOWED_USER_ID)
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, scheduler=scheduler)
     finally:
         await db.close_pool()
 
