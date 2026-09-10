@@ -10,6 +10,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-kira}
     volumes:
       - kira_pgdata:/var/lib/postgresql/data
+      - ${KPI_DATA_PATH}:/app/kpi_data:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kira}"]
       interval: 5s

@@ -5,6 +5,9 @@ import time
 import psutil
 from bot import db
 from bot.jobs import send_reminder
+import aiosqlite
+import aiohttp
+import json
 
 TOOL_SCHEMAS = [
     {
@@ -70,6 +73,55 @@ TOOL_SCHEMAS = [
                 "required": ["run_at", "text"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_kpi_schedule",
+            "description": "Получить расписание пар из КПИ. Возвращает расписание на 1 и 2 неделю с уже отфильтрованными (скрытыми) предметами пользователя. LLM должна сама определить, какая сейчас неделя и день.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "restart_docker_container",
+            "description": "Перезапустить указанный Docker-контейнер.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "container_name": {
+                        "type": "string",
+                        "description": "Точное имя контейнера (например: 'kpi-schedule-bot' или 'nginx')"
+                    }
+                },
+                "required": ["container_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_docker_logs",
+            "description": "Получить последние строки логов указанного Docker-контейнера.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "container_name": {
+                        "type": "string",
+                        "description": "Точное имя контейнера"
+                    },
+                    "lines": {
+                        "type": "integer",
+                        "description": "Количество последних строк лога (по умолчанию 50)"
+                    }
+                },
+                "required": ["container_name"]
+            }
+        }
     }
 ]
 
@@ -111,6 +163,38 @@ async def get_docker_status() -> str:
     return "Нет запущенных контейнеров или пустой вывод."
 
 
+async def restart_docker_container(container_name: str) -> str:
+    process = await asyncio.create_subprocess_exec(
+        "docker", "restart", container_name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        return f"❌ Ошибка рестарта {container_name}:\n{stderr.decode('utf-8')}"
+    return f"✅ Контейнер {container_name} успешно перезапущен."
+
+
+async def get_docker_logs(container_name: str, lines: int = 50) -> str:
+    process = await asyncio.create_subprocess_exec(
+        "docker", "logs", "--tail", str(lines), container_name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+
+    logs = stdout.decode('utf-8') + "\n" + stderr.decode('utf-8')
+    logs = logs.strip()
+
+    if not logs:
+        return f"Логи контейнера {container_name} пусты."
+
+    if len(logs) > 3000:
+        logs = "...[УРЕЗАНО]...\n" + logs[-3000:]
+
+    return f"Логи контейнера {container_name} (последние {lines} строк):\n{logs}"
+
+
 def build_tools_registry(user_id: int, scheduler=None) -> dict:
     async def save_memory(key: str, value: str) -> str:
         # Функция захватывает user_id из области видимости фабрики
@@ -134,16 +218,87 @@ def build_tools_registry(user_id: int, scheduler=None) -> dict:
         )
         return f"✅ Напоминание успешно установлено на {run_at}."
 
+    async def get_kpi_schedule() -> str:
+        old_bot_db_path = "/app/kpi_data/bot_data.db"
+        try:
+            async with aiosqlite.connect(old_bot_db_path) as db:
+                cursor = await db.execute(
+                    "SELECT group_id, group_name FROM user_groups WHERE user_key = ?",
+                    (str(user_id),)
+                )
+                row = await cursor.fetchone()
+                if not row:
+                    return "❌ Я не знаю твою группу. Похоже, ты не зарегистрирован в старом боте."
+                group_id, group_name = row[0], row[1]
+
+                cursor = await db.execute(
+                    "SELECT subject_name FROM user_hidden_subjects WHERE user_key = ? AND group_id = ?",
+                    (str(user_id), group_id)
+                )
+                hidden_subjects = {r[0] for r in await cursor.fetchall()}
+
+                cursor = await db.execute(
+                    "SELECT subject_name, pair_type, url FROM subject_links WHERE group_id = ?",
+                    (group_id,)
+                )
+                user_links = {(r[0], r[1]): r[2] for r in await cursor.fetchall()}
+
+            status_url = "https://api.campus.kpi.ua/schedule/status"
+            schedule_url = f"https://api.campus.kpi.ua/schedule/lessons?groupId={group_id}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(status_url) as status_resp:
+                    status_data = await status_resp.json()
+                    current_week = status_data.get("data", {}).get("currentWeek", 1)
+
+                async with session.get(schedule_url) as resp:
+                    if resp.status != 200:
+                        return f"❌ Ошибка API КПИ (статус {resp.status})"
+                    api_data = await resp.json()
+
+            schedule_data = api_data.get("data", {})
+
+            for week_key in ["scheduleFirstWeek", "scheduleSecondWeek"]:
+                for day in schedule_data.get(week_key, []):
+                    filtered_pairs = []
+                    for pair in day.get("pairs", []):
+                        subj_name = pair.get("name")
+                        pair_type = pair.get("type", "")
+
+                        if subj_name in hidden_subjects:
+                            continue
+
+                        link = user_links.get((subj_name, pair_type))
+                        if link:
+                            pair["custom_connection_url"] = link  # Отдаем ссылку Кире
+
+                        filtered_pairs.append(pair)
+                    day["pairs"] = filtered_pairs
+
+            return (
+                f"Группа: {group_name}\n"
+                f"ВАЖНО: Сейчас {current_week}-я учебная неделя по календарю КПИ.\n"
+                f"Расписание (JSON):\n{json.dumps(schedule_data, ensure_ascii=False)}"
+            )
+
+        except Exception as e:
+            return f"❌ Ошибка при получении расписания: {e}"
 
     return {
         "get_system_status": get_system_status,
         "get_docker_status": get_docker_status,
         "save_memory": save_memory,
         "set_reminder": set_reminder,
+        "get_kpi_schedule": get_kpi_schedule,
+        "restart_docker_container": restart_docker_container,  # <---
+        "get_docker_logs": get_docker_logs,
     }
 
 TOOL_DESCRIPTIONS = {
     "get_system_status": "Гляну статы сервера...",
     "get_docker_status": "Смотрю докер...",
     "set_reminder": "Ставлю напоминалочку...",
+    "get_kpi_schedule": "Иду на сайт смотреть тебе расписание...",
+    "restart_docker_container": "Дергаю рубильник контейнера...",
+    "get_docker_logs": "Читаю логи..."
 }
