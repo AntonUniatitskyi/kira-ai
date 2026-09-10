@@ -220,6 +220,7 @@ def build_tools_registry(user_id: int, scheduler=None) -> dict:
 
     async def get_kpi_schedule() -> str:
         old_bot_db_path = "/app/kpi_data/bot_data.db"
+
         try:
             async with aiosqlite.connect(old_bot_db_path) as db:
                 cursor = await db.execute(
@@ -243,37 +244,41 @@ def build_tools_registry(user_id: int, scheduler=None) -> dict:
                 )
                 user_links = {(r[0], r[1]): r[2] for r in await cursor.fetchall()}
 
-            status_url = "https://api.campus.kpi.ua/schedule/status"
+            time_url = "https://schedule.kpi.ua/api/time/current"
             schedule_url = f"https://api.campus.kpi.ua/schedule/lessons?groupId={group_id}"
 
             async with aiohttp.ClientSession() as session:
-                async with session.get(status_url) as status_resp:
-                    status_data = await status_resp.json()
-                    current_week = status_data.get("data", {}).get("currentWeek", 1)
+                async with session.get(time_url) as time_resp:
+                    time_data = await time_resp.json()
+                    current_week = 1
+                    if isinstance(time_data, dict):
+                        current_week = time_data.get("data", {}).get("currentWeek", 1)
 
                 async with session.get(schedule_url) as resp:
                     if resp.status != 200:
                         return f"❌ Ошибка API КПИ (статус {resp.status})"
-                    api_data = await resp.json()
+                    schedule_data = await resp.json()
 
-            schedule_data = api_data.get("data", {})
+            if isinstance(schedule_data, dict) and "data" in schedule_data:
+                schedule_data = schedule_data["data"]
 
-            for week_key in ["scheduleFirstWeek", "scheduleSecondWeek"]:
-                for day in schedule_data.get(week_key, []):
-                    filtered_pairs = []
-                    for pair in day.get("pairs", []):
-                        subj_name = pair.get("name")
-                        pair_type = pair.get("type", "")
+            if isinstance(schedule_data, dict):
+                for week_key in ["scheduleFirstWeek", "scheduleSecondWeek"]:
+                    for day in schedule_data.get(week_key, []):
+                        filtered_pairs = []
+                        for pair in day.get("pairs", []):
+                            subj_name = pair.get("name")
+                            pair_type = pair.get("type", "")
 
-                        if subj_name in hidden_subjects:
-                            continue
+                            if subj_name in hidden_subjects:
+                                continue
 
-                        link = user_links.get((subj_name, pair_type))
-                        if link:
-                            pair["custom_connection_url"] = link  # Отдаем ссылку Кире
+                            link = user_links.get((subj_name, pair_type))
+                            if link:
+                                pair["custom_connection_url"] = link
 
-                        filtered_pairs.append(pair)
-                    day["pairs"] = filtered_pairs
+                            filtered_pairs.append(pair)
+                        day["pairs"] = filtered_pairs
 
             return (
                 f"Группа: {group_name}\n"
