@@ -278,10 +278,11 @@ def build_tools_registry(user_id: int, scheduler=None) -> dict:
 
                             filtered_pairs.append(pair)
                         day["pairs"] = filtered_pairs
-
+            ua_weekdays = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота", "Неділя"]
+            today_ua = ua_weekdays[datetime.now().weekday()]
             return (
                 f"Группа: {group_name}\n"
-                f"ВАЖНО: Сейчас {current_week}-я учебная неделя по календарю КПИ.\n"
+                f"ВАЖНО: Сейчас {current_week}-я учебная неделя по календарю КПИ. Сегодня {today_ua}.\n"
                 f"Расписание (JSON):\n{json.dumps(schedule_data, ensure_ascii=False)}"
             )
 

@@ -28,7 +28,9 @@ async def ask_kira(
         facts_str = "\n".join(f"- {k}: {v}" for k, v in facts.items())
         final_system_prompt += f"\n\nТЕКУЩИЕ ФАКТЫ ИЗ ПАМЯТИ (ты сама их записала ранее):\n{facts_str}"
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    weekdays_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    current_weekday = weekdays_ru[datetime.now().weekday()]
+    now_str = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({current_weekday})"
     final_system_prompt += f"\n\nТЕКУЩЕЕ ВРЕМЯ СИСТЕМЫ (Киев): {now_str}. Опирайся на него при установке напоминаний."
 
     messages = [{"role": "system", "content": final_system_prompt}]
