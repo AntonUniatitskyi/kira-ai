@@ -2,8 +2,8 @@ services:
   db:
     image: postgres:16-alpine
     restart: always
-    ports:
-      - "5432:5432"
+#    ports:
+#      - "5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kira}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Kira1803_Li}
@@ -22,7 +22,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ${KPI_DATA_PATH}:/app/kpi_data:ro
+      - ${KPI_DATA_PATH}:/app/kpi_data
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       db:

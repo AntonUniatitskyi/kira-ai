@@ -125,6 +125,10 @@ TOOL_SCHEMAS = [
     }
 ]
 
+HTTP_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+
+def get_week_type(date: datetime) -> str:
+    return "scheduleFirstWeek" if date.isocalendar()[1] % 2 == 0 else "scheduleSecondWeek"
 
 async def get_system_status() -> str:
     mem = psutil.virtual_memory()
@@ -244,20 +248,15 @@ def build_tools_registry(user_id: int, scheduler=None) -> dict:
                 )
                 user_links = {(r[0], r[1]): r[2] for r in await cursor.fetchall()}
 
-            time_url = "https://schedule.kpi.ua/api/time/current"
             schedule_url = f"https://api.campus.kpi.ua/schedule/lessons?groupId={group_id}"
 
             async with aiohttp.ClientSession() as session:
-                async with session.get(time_url) as time_resp:
-                    time_data = await time_resp.json()
-                    current_week = 1
-                    if isinstance(time_data, dict):
-                        current_week = time_data.get("data", {}).get("currentWeek", 1)
-
-                async with session.get(schedule_url) as resp:
+                async with session.get(schedule_url, headers=HTTP_HEADERS, timeout=5) as resp:
                     if resp.status != 200:
                         return f"❌ Ошибка API КПИ (статус {resp.status})"
                     schedule_data = await resp.json()
+
+            current_week = 1 if get_week_type(datetime.now()) == "scheduleFirstWeek" else 2
 
             if isinstance(schedule_data, dict) and "data" in schedule_data:
                 schedule_data = schedule_data["data"]
