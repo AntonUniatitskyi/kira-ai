@@ -21,6 +21,8 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      - TZ=Europe/Kyiv
     volumes:
       - ${KPI_DATA_PATH}:/app/kpi_data
       - /var/run/docker.sock:/var/run/docker.sock
