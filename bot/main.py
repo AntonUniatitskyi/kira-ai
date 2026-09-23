@@ -9,11 +9,10 @@ from bot import db
 from bot.config import ALLOWED_USER_ID, TG_TOKEN
 from bot.llm import ask_kira
 from bot.security import WhitelistMiddleware
-from bot.tools import TOOL_DESCRIPTIONS
+from bot.tools import TOOL_DESCRIPTIONS, build_tools_registry
 
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from bot.config import DATABASE_URL
@@ -31,6 +30,42 @@ dp = Dispatcher()
 # если добавишь кнопки/callback'и)
 dp.update.outer_middleware(WhitelistMiddleware())
 
+
+@dp.message(F.text.lower().in_({"утро", "доброе утро", "/morning"}))
+async def handle_morning_routine(message: Message, scheduler: AsyncIOScheduler):
+    user_id = message.from_user.id
+    await message.answer("🌅 Собираю утреннюю сводку, варю кофе...")
+    registry = build_tools_registry(user_id, scheduler)
+    results = await asyncio.gather(
+        registry["get_weather"](),
+        registry["get_kpi_schedule"](),
+        registry["get_system_status"](),
+        return_exceptions=True
+    )
+
+    safe_results = [
+        f"❌ Критический системный сбой: {type(res).__name__}({str(res)})" if isinstance(res, Exception) else res
+        for res in results
+    ]
+
+    raw_data = (
+        f"Данные для сводки:\n\n"
+        f"ПОГОДА:\n{safe_results[0]}\n\n"
+        f"РАСПИСАНИЕ:\n{safe_results[1]}\n\n"
+        f"СЕРВЕР:\n{safe_results[2]}"
+    )
+    prompt = f"Оформи эти сырые данные в бодрое, приветливое утреннее сообщение для меня. {raw_data}"
+
+    reply_text = await ask_kira(
+        history=[],
+        facts={},
+        user_message=prompt,
+        user_id=user_id,
+        scheduler=scheduler,
+        use_tools=False
+    )
+
+    await message.answer(reply_text)
 
 @dp.message(Command("clear", "reset"))
 async def cmd_clear(message: Message) -> None:

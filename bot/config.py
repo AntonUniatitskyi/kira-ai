@@ -56,4 +56,9 @@ SYSTEM_PROMPT = (
     "❌ «Я проверил логи» → ✅ «Я проверила логи». "
 )
 
+KNOWN_SUBNETS = {
+    "main": "192.168.1.0/24",
+    "secondary": "192.168.2.0/24",
+}
+
 MAX_TOOL_ITERATIONS = int(os.getenv('MAX_TOOL_ITERATIONS', "5"))

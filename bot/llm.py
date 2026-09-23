@@ -19,6 +19,7 @@ async def ask_kira(
         user_message: str,
         user_id: int,
         scheduler,
+        use_tools: bool = True,
         on_tool_call: Optional[Callable[[str], Awaitable[None]]] = None
 ) -> str:
     registry = build_tools_registry(user_id, scheduler)
@@ -38,12 +39,14 @@ async def ask_kira(
     messages.append({"role": "user", "content": user_message})
 
     for _ in range(MAX_TOOL_ITERATIONS):
+        kwargs = {
+            "model": LLM_MODEL,
+            "messages": messages,
+        }
+        if use_tools:
+            kwargs["tools"] = TOOL_SCHEMAS
 
-        response = await client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            tools= TOOL_SCHEMAS
-        )
+        response = await client.chat.completions.create(**kwargs)
 
         message_obj = response.choices[0].message
         tool_calls = message_obj.tool_calls

@@ -8,6 +8,40 @@ from bot.jobs import send_reminder
 import aiosqlite
 import aiohttp
 import json
+import ipaddress
+from bot.config import KNOWN_SUBNETS
+import os
+
+WMO_CODES = {
+    0: "☀️ Ясно",
+    1: "🌤 В основном ясно",
+    2: "⛅ Частично облачно",
+    3: "☁️ Пасмурно",
+    45: "🌫 Туман",
+    48: "🌫 Изморозь",
+    51: "🌦 Лёгкая морось",
+    53: "🌦 Морось",
+    55: "🌦 Сильная морось",
+    56: "🧊 Ледяная морось",
+    57: "🧊 Сильная ледяная морось",
+    61: "🌧 Небольшой дождь",
+    63: "🌧 Дождь",
+    65: "🌧 Ливень",
+    66: "🧊 Ледяной дождь",
+    67: "🧊 Сильный ледяной дождь",
+    71: "🌨 Небольшой снег",
+    73: "🌨 Снег",
+    75: "🌨 Сильный снегопад",
+    77: "❄️ Снежная крупа",
+    80: "🌦 Кратковременный дождь",
+    81: "🌧 Кратковременный ливень",
+    82: "⛈ Сильный ливень",
+    85: "🌨 Кратковременный снег",
+    86: "🌨 Сильный кратковременный снег",
+    95: "⛈ Гроза",
+    96: "⛈ Гроза с градом",
+    99: "⛈ Сильная гроза с градом",
+}
 
 TOOL_SCHEMAS = [
     {
@@ -122,13 +156,68 @@ TOOL_SCHEMAS = [
                 "required": ["container_name"]
             }
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scan_host_ports",
+            "description": "Просканировать локальный IP-адрес на открытые порты. Принимает ТОЛЬКО валидные IPv4 адреса.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_ip": {
+                        "type": "string",
+                        "description": "IPv4 адрес цели, например '192.168.1.100'"
+                    }
+                },
+                "required": ["target_ip"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scan_local_devices",
+            "description": "Просканировать известную локальную подсеть на наличие подключенных устройств (поиск соседей по Wi-Fi).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "network": {
+                        "type": "string",
+                        "enum": ["main", "secondary"],
+                        "description": "Какую сеть сканировать: 'main' (домашняя) или 'secondary' (гостевая/дополнительная)."
+                    }
+                },
+                "required": ["network"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Получить текущую погоду в указанном городе. Если город не указан, берет локацию сервера.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "Город на английском или русском (например: Kyiv, Бородянка)."
+                    }
+                }
+            }
+        }
+    },
 ]
 
 HTTP_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 def get_week_type(date: datetime) -> str:
     return "scheduleFirstWeek" if date.isocalendar()[1] % 2 == 0 else "scheduleSecondWeek"
+
+def is_private_ip(ip: str) -> bool:
+    ip_obj = ipaddress.ip_address(ip)
+    return ip_obj.is_private or ip_obj.is_loopback
 
 async def get_system_status() -> str:
     mem = psutil.virtual_memory()
@@ -166,16 +255,26 @@ async def get_docker_status() -> str:
 
     return "Нет запущенных контейнеров или пустой вывод."
 
+PROTECTED_CONTAINERS = {"kira-bot-db-1", "kira-bot-bot-1"}
+
 
 async def restart_docker_container(container_name: str) -> str:
+    if container_name in PROTECTED_CONTAINERS:
+        return (
+            f"❌ Отказ: Контейнер '{container_name}' находится в чёрном списке "
+            f"(защищен от перезапуска). Я не могу перезапустить саму себя или системную БД."
+        )
+
     process = await asyncio.create_subprocess_exec(
         "docker", "restart", container_name,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
     _, stderr = await process.communicate()
+
     if process.returncode != 0:
         return f"❌ Ошибка рестарта {container_name}:\n{stderr.decode('utf-8')}"
+
     return f"✅ Контейнер {container_name} успешно перезапущен."
 
 
@@ -198,6 +297,118 @@ async def get_docker_logs(container_name: str, lines: int = 50) -> str:
 
     return f"Логи контейнера {container_name} (последние {lines} строк):\n{logs}"
 
+
+async def scan_host_ports(target_ip: str) -> str:
+    try:
+        if not is_private_ip(target_ip):
+            return (
+                f"❌ Отказ: IP {target_ip} — публичный. "
+                "Я могу сканировать только локальные сети."
+            )
+    except ValueError:
+        return (
+            f"❌ Ошибка: '{target_ip}' не является валидным IP-адресом. "
+            "Нужен точный IPv4, например 192.168.1.1."
+        )
+
+    process = await asyncio.create_subprocess_exec(
+        "nmap", "-F", "--open", "-Pn", target_ip,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        return f"❌ Ошибка nmap:\n{stderr.decode('utf-8')}"
+    result = stdout.decode('utf-8').strip()
+
+    return f"Результат сканирования {target_ip}:\n{result}"
+
+
+async def scan_local_devices(network: str) -> str:
+    subnet = KNOWN_SUBNETS.get(network)
+    if not subnet:
+        return (
+            f"❌ Ошибка: неизвестный идентификатор сети '{network}'. "
+            f"Доступные варианты: {', '.join(KNOWN_SUBNETS.keys())}."
+        )
+
+    process = await asyncio.create_subprocess_exec(
+        "nmap", "-sn", subnet,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        return f"❌ Ошибка при сканировании подсети {network} ({subnet}):\n{stderr.decode('utf-8')}"
+
+    result = stdout.decode('utf-8').strip()
+    return f"Устройства в сети {network} ({subnet}):\n{result}"
+
+
+async def get_weather(city: str = None) -> str:
+    if not city:
+        city = os.getenv("WEATHER_LOCATION")
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            if city:
+                geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+                geo_params = {
+                    "name": city,
+                    "count": 1,
+                    "language": "ru",
+                    "format": "json"
+                }
+                async with session.get(geo_url, params=geo_params, timeout=5) as geo_resp:
+                    geo_data = await geo_resp.json()
+                    if not geo_data.get("results"):
+                        return f"❌ Город '{city}' не найден."
+
+                    location = geo_data["results"][0]
+                    lat, lon = location["latitude"], location["longitude"]
+                    target_name = location["name"]
+
+            else:
+                ip_url = "http://ip-api.com/json/"
+                async with session.get(ip_url, timeout=5) as ip_resp:
+                    ip_data = await ip_resp.json()
+                    if ip_data.get("status") != "success":
+                        return "❌ Не удалось определить местоположение сервера."
+
+                    lat, lon = ip_data["lat"], ip_data["lon"]
+                    target_name = ip_data["city"]
+
+            weather_url = "https://api.open-meteo.com/v1/forecast"
+            weather_params = {
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,apparent_temperature,wind_speed_10m,weather_code",
+                "timezone": "auto"
+            }
+
+            async with session.get(weather_url, params=weather_params, timeout=5) as weather_resp:
+                if weather_resp.status != 200:
+                    return f"❌ Ошибка погодного сервиса (статус {weather_resp.status})."
+
+                w_data = await weather_resp.json()
+                current = w_data.get("current", {})
+                temp = current.get("temperature_2m", "?")
+                feels_like = current.get("apparent_temperature", "?")
+                wind = current.get("wind_speed_10m", "?")
+                w_code = current.get("weather_code", 0)
+
+                condition = WMO_CODES.get(w_code, "❓ Неизвестно")
+
+                return (
+                    f"Погода в {target_name}:\n"
+                    f"{condition}\n"
+                    f"🌡 Температура: {temp}°C (Ощущается как {feels_like}°C)\n"
+                    f"💨 Ветер: {wind} км/ч"
+                )
+
+        except Exception as e:
+            return f"❌ Ошибка при получении погоды: {e}"
 
 def build_tools_registry(user_id: int, scheduler=None) -> dict:
     async def save_memory(key: str, value: str) -> str:
@@ -297,6 +508,9 @@ def build_tools_registry(user_id: int, scheduler=None) -> dict:
         "get_kpi_schedule": get_kpi_schedule,
         "restart_docker_container": restart_docker_container,  # <---
         "get_docker_logs": get_docker_logs,
+        "scan_host_ports": scan_host_ports,
+        "scan_local_devices": scan_local_devices,
+        "get_weather": get_weather,
     }
 
 TOOL_DESCRIPTIONS = {
@@ -305,5 +519,8 @@ TOOL_DESCRIPTIONS = {
     "set_reminder": "Ставлю напоминалочку...",
     "get_kpi_schedule": "Иду на сайт смотреть тебе расписание...",
     "restart_docker_container": "Дергаю рубильник контейнера...",
-    "get_docker_logs": "Читаю логи..."
+    "get_docker_logs": "Читаю логи...",
+    "scan_host_ports": "Сканирую открытые порты...",
+    "scan_local_devices": "Сканирую Wi-Fi на наличие устройств...",
+    "get_weather": "Смотрю погоду на улице...",
 }
