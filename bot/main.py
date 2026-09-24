@@ -3,7 +3,7 @@ import logging
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, InputRichMessage
 
 from bot import db
 from bot.config import ALLOWED_USER_ID, TG_TOKEN
@@ -65,7 +65,10 @@ async def handle_morning_routine(message: Message, scheduler: AsyncIOScheduler):
         use_tools=False
     )
 
-    await message.answer(reply_text)
+    await bot.send_rich_message(
+        chat_id=message.chat.id,
+        rich_message=InputRichMessage(markdown=reply_text),
+    )
 
 @dp.message(Command("clear", "reset"))
 async def cmd_clear(message: Message) -> None:
@@ -111,7 +114,10 @@ async def handle_message(message: Message, scheduler: AsyncIOScheduler) -> None:
         await db.save_message(user_id, "user", user_text)
         await db.save_message(user_id, "assistant", reply_text)
 
-        await message.answer(reply_text)
+        await bot.send_rich_message(
+            chat_id=message.chat.id,
+            rich_message=InputRichMessage(markdown=reply_text),
+        )
     except Exception as e:
         logger.exception("Ошибка при обработке сообщения")
         await message.answer(f"Блин, апишка отвалилась. Ошибка: {e}")
