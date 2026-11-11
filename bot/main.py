@@ -7,7 +7,7 @@ from aiogram.types import Message, InputRichMessage
 
 from bot import db
 from bot.config import ALLOWED_USER_ID, TG_TOKEN
-from bot.llm import ask_kira
+from bot.llm import ask_kira, AllProvidersFailed
 from bot.security import WhitelistMiddleware
 from bot.tools import TOOL_DESCRIPTIONS, build_tools_registry
 
@@ -56,19 +56,36 @@ async def handle_morning_routine(message: Message, scheduler: AsyncIOScheduler):
     )
     prompt = f"Оформи эти сырые данные в бодрое, приветливое утреннее сообщение для меня. {raw_data}"
 
-    reply_text = await ask_kira(
-        history=[],
-        facts={},
-        user_message=prompt,
-        user_id=user_id,
-        scheduler=scheduler,
-        use_tools=False
-    )
+    try:
+        reply_text = await ask_kira(
+            history=[],
+            facts={},
+            user_message=prompt,
+            user_id=user_id,
+            scheduler=scheduler,
+            use_tools=False
+        )
+    except AllProvidersFailed:
+        logger.exception("Утренняя сводка: все LLM недоступны")
+        # Не даём "Утру" умереть молча: отправляем сырые данные без оформления
+        await message.answer(
+            "Все мои мозги сейчас недоступны, так что вот сырые данные:\n\n" + raw_data,
+            parse_mode=None,
+        )
+        return
+    except Exception:
+        logger.exception("Утренняя сводка: неожиданная ошибка")
+        await message.answer(
+            "Что-то сломалось при сборке сводки, вот сырые данные:\n\n" + raw_data,
+            parse_mode=None,
+        )
+        return
 
     await bot.send_rich_message(
         chat_id=message.chat.id,
         rich_message=InputRichMessage(markdown=reply_text),
     )
+
 
 @dp.message(Command("clear", "reset"))
 async def cmd_clear(message: Message) -> None:
@@ -118,9 +135,12 @@ async def handle_message(message: Message, scheduler: AsyncIOScheduler) -> None:
             chat_id=message.chat.id,
             rich_message=InputRichMessage(markdown=reply_text),
         )
+    except AllProvidersFailed:
+        logger.exception("Все LLM-провайдеры недоступны")
+        await message.answer("Все мои мозги сейчас недоступны, попробуй через пару минут.")
     except Exception as e:
         logger.exception("Ошибка при обработке сообщения")
-        await message.answer(f"Блин, апишка отвалилась. Ошибка: {e}")
+        await message.answer(f"Блин, что-то сломалось. Ошибка: {e}")
     finally:
         typing_task.cancel()
 
